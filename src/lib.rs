@@ -6,7 +6,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use std::ffi::c_long;
 use std::ops::Add;
 use tokio::{
     sync::mpsc,
@@ -189,7 +188,7 @@ pub struct Server {
     peer_ids: Vec<i32>,
     cm: Arc<Mutex<ConsensusModule>>,
     rpc_proxy: Option<Arc<RPCProxy>>,
-    ready: mpsc::Receiver<()>,
+    // ready: mpsc::Receiver<()>,
     shutdown: bool,
     want_be_leader: bool, // 设置了一个是否想变为leader的选项, 用于控制领导者选举, 不至于全是领导者导致超时(其实也可以搞随机选举超时, 但比较麻烦)
 }
@@ -203,7 +202,7 @@ impl Server {
             peer_ids,
             cm: Arc::new(Mutex::new(cm)),
             rpc_proxy: None,
-            ready,
+            // ready,
             shutdown: false,
             want_be_leader: false,  // 默认为false
         }
@@ -218,7 +217,7 @@ impl Server {
         let election_cm = Arc::clone(&self.cm);
         let election_rpc = self.rpc_proxy.clone();
         let server_id = self.server_id;
-        let mut want_be_leader = self.want_be_leader.clone();
+        let mut want_be_leader = false;
 
         // 选举处理
         tokio::spawn(async move {
@@ -230,12 +229,15 @@ impl Server {
                     if cm.end_thread {
                         return
                     }
+                    // if cm.election_reset_event.elapsed() >= cm.election_timeout_max {
+                    //     debug_println(String::from("节点").add(cm.id.to_string().as_str()).add("发现leader心跳超时"));
+                    // }
                     if want_be_leader == false || cm.state == CMState::Dead {
                         // if cm.id == 2 {
                         //     debug_println(String::from("节点二尝试成为新leader失败1"));
                         // }
                         false
-                    }else if cm.election_reset_event.elapsed() < cm.election_timeout_max {
+                    }else if cm.election_reset_event.elapsed() < cm.election_timeout() {
                         false
                     }else{
                         true
@@ -247,9 +249,7 @@ impl Server {
                     let (current_term, peer_ids) = {
                         let mut cm = election_cm.lock().unwrap();
                         cm.start_election();
-                        if cm.id == 2 {
-                            debug_println(String::from("节点二尝试成为新leader"));
-                        }
+                        debug_println(String::from("节点").add(cm.id.to_string().as_str()).add("尝试成为新leader"));
                         (cm.current_term, cm.peer_ids.clone())
                     };
 
@@ -295,29 +295,41 @@ impl Server {
         // 启动心跳发送任务
         let heartbeat_cm = Arc::clone(&self.cm);
         let heartbeat_rpc = self.rpc_proxy.clone();
-        let server_id = self.server_id;
+        let server_id = self.server_id.clone();
         
         tokio::spawn(async move {
             loop {
+                let mut leader_id = server_id.clone();
                 // 检查是否需要发送心跳
                 let (should_send_heartbeat, mut current_term, peer_ids) = {
                     let cm = heartbeat_cm.lock().unwrap();
                     if cm.end_thread {
                         return
                     }
-                    if cm.self_last_heart_beat.elapsed() >= cm.heart_beat_timeout_min {
+                    if cm.self_last_heart_beat.elapsed() < cm.heart_beat_timeout_min {
                         (false, 0, Vec::new())
                     } else {
-                        (true, cm.current_term, cm.peer_ids.clone())
+                        leader_id = cm.leader_id.clone();
+                        (true, cm.current_term.clone(), cm.peer_ids.clone())
                     }
                 };
 
                 if should_send_heartbeat {
+                    {
+                        let mut cm = heartbeat_cm.lock().unwrap();
+                        cm.self_last_heart_beat = Instant::now();
+                        if cm.id == cm.leader_id {
+                            cm.reset_election_timer();
+                        }
+                        if cm.leader_id == cm.id {
+                            cm.reset_election_timer();
+                        }
+                    }
                     // 向所有对等节点发送心跳
                     for &peer_id in &peer_ids {
                         let args = AppendEntriesArgs {
                             term: current_term,
-                            leader_id: server_id,
+                            leader_id: leader_id,
                             prev_log_index: 0,
                             prev_log_term: 0,
                             entries: Vec::new(),
@@ -335,7 +347,7 @@ impl Server {
                                     let mut cm = heartbeat_cm.lock().unwrap();
                                     if !reply.success && reply.term > current_term {
                                         cm.become_follower(reply.term);
-                                        current_term = reply.term;
+                                        // current_term = reply.term;
                                     }
                                 }
                                 Err(e) => debug!("AppendEntries RPC失败: {}", e),
@@ -487,6 +499,7 @@ impl ConsensusModule {
     fn become_leader(&mut self) {
         debug!("[{}] 变为Leader, term={}", self.id, self.current_term);
         self.state = CMState::Leader;
+        self.leader_id = self.id;
 
         // 初始化领导者状态
         let log_len = self.log.len() as i32;
@@ -495,8 +508,7 @@ impl ConsensusModule {
             self.next_index.insert(peer_id, log_len);
             self.match_index.insert(peer_id, -1);
         }
-        
-        // 立即发送心跳
+
         self.reset_election_timer();
     }
 
@@ -682,7 +694,7 @@ impl RaftCluster {
             let (ready_tx, ready_rx) = mpsc::channel(1);
             let peer_ids: Vec<i32> = (0..5).filter(|&x| x != i).collect();
             
-            let mut server = Server::new(i, peer_ids, ready_rx);
+            let server = Server::new(i, peer_ids, ready_rx);
             cm_list.push(Arc::clone(&server.cm));
             // if i == 2 {
             //     server.want_be_leader = true;
@@ -729,6 +741,7 @@ impl RaftCluster {
                 return Some((i as i32, cm.current_term));
             }
         }
+        debug_println(String::from("当前没有领导者"));
         debug!("当前没有领导者");
         None
     }

@@ -24,7 +24,7 @@ async fn test_leader_stop_election() -> Result<()> {
     debug!("已设置节点0的end_thread为true");
 
     // 等待，让新的领导者选举完成
-    time::sleep(Duration::from_secs(6)).await;
+    time::sleep(Duration::from_secs(3)).await;
 
     // 检查是否有新的领导者被选出
     if let Some((new_leader, new_term)) = cluster.get_leader() {
@@ -32,8 +32,9 @@ async fn test_leader_stop_election() -> Result<()> {
         assert_ne!(new_leader, 0, "新领导者不应该是节点0");
         // assert!(new_term > term, "新任期应该大于旧任期");
         // 验证新领导者是节点1-4之间的一个
-        assert!(new_leader >= 1 && new_leader <= 4, "新领导者应该是节点1-4之间的一个");
+        assert!(new_leader >= 1 && new_leader <= 4, "Accept!!!新领导者应该是节点1-4之间的一个");
         debug!("选出新的领导者: id={}, term={}", new_leader, new_term);
+        debug_println(String::from("选出新的领导者: id=").add(new_leader.to_string().as_str()));
         Ok(())
     } else {
         Err(anyhow::anyhow!("没有选出新的领导者"))
