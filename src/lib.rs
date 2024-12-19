@@ -100,7 +100,7 @@ impl RPCProxy {
     }
 
     /// 处理网络连接中投票请求
-    pub async fn request_vote(&self, server_id: i32, args: RequestVoteArgs) -> Result<RequestVoteReply> {
+    pub async fn request_vote(&self, server_id: i32, args: RequestVoteArgs) -> Result<(RequestVoteReply, i32)> {
         // // 模拟不可靠的网络连接
         // if std::env::var("RAFT_UNRELIABLE_RPC").is_ok() {
         //     let dice = {
@@ -130,14 +130,14 @@ impl RPCProxy {
             let tmp = Arc::clone(v);
             let mut cm = tmp.lock().unwrap();
             if cm.id == server_id {
-                return Ok(cm.request_vote(args));
+                return Ok((cm.request_vote(args), cm.leader_id));
             }
         }
         Err(anyhow::anyhow!("Invalid server ID"))
     }
 
     /// 处理网络连接中追加请求
-    pub async fn append_entries(&self, server_id: i32, args: AppendEntriesArgs) -> Result<AppendEntriesReply> {
+    pub async fn append_entries(&self, server_id: i32, args: AppendEntriesArgs) -> Result<(AppendEntriesReply, i32)> {
         // // 模拟不可靠的网络连接
         // if std::env::var("RAFT_UNRELIABLE_RPC").is_ok() {
         //     let dice = {
@@ -167,7 +167,7 @@ impl RPCProxy {
             let tmp = Arc::clone(v);
             let mut cm = tmp.lock().unwrap();
             if cm.id == server_id {
-                return Ok(cm.append_entries(args));
+                return Ok((cm.append_entries(args), cm.leader_id));
             }
         }
         Err(anyhow::anyhow!("Invalid server ID"))
@@ -212,7 +212,7 @@ impl Server {
     pub async fn serve(&mut self) -> Result<()> {
         // // 等待启动信号
         // self.ready.recv().await;
-        // TODO(); // 没发信号
+        // // 没发信号
         // 启动选举检查任务
         let election_cm = Arc::clone(&self.cm);
         let election_rpc = self.rpc_proxy.clone();
@@ -266,12 +266,12 @@ impl Server {
 
                         tokio::spawn(async move {
                             match rpc_proxy.request_vote(peer_id, args).await {
-                                Ok(reply) => {
+                                Ok((reply, reply_leader_id)) => {
                                     let mut cm = election_cm.lock().unwrap();
                                     if reply.vote_granted {
                                         cm.votes_received += 1;
                                     } else if reply.term > current_term {
-                                        cm.become_follower(reply.term);
+                                        cm.become_follower(reply.term, reply_leader_id);
                                     }
                                 }
                                 Err(e) => debug!("RequestVote RPC失败: {}", e),
@@ -301,12 +301,12 @@ impl Server {
             loop {
                 let mut leader_id = server_id.clone();
                 // 检查是否需要发送心跳
-                let (should_send_heartbeat, mut current_term, peer_ids) = {
+                let (should_send_heartbeat, current_term, peer_ids) = {
                     let cm = heartbeat_cm.lock().unwrap();
                     if cm.end_thread {
                         return
                     }
-                    if cm.self_last_heart_beat.elapsed() < cm.heart_beat_timeout_min {
+                    if cm.state == CMState::Dead || cm.self_last_heart_beat.elapsed() < cm.heart_beat_timeout_min {
                         (false, 0, Vec::new())
                     } else {
                         leader_id = cm.leader_id.clone();
@@ -315,16 +315,6 @@ impl Server {
                 };
 
                 if should_send_heartbeat {
-                    {
-                        let mut cm = heartbeat_cm.lock().unwrap();
-                        cm.self_last_heart_beat = Instant::now();
-                        if cm.id == cm.leader_id {
-                            cm.reset_election_timer();
-                        }
-                        if cm.leader_id == cm.id {
-                            cm.reset_election_timer();
-                        }
-                    }
                     // 向所有对等节点发送心跳
                     for &peer_id in &peer_ids {
                         let args = AppendEntriesArgs {
@@ -343,16 +333,27 @@ impl Server {
 
                         tokio::spawn(async move {
                             match rpc_proxy.append_entries(peer_id, args).await {
-                                Ok(reply) => {
+                                Ok((reply, reply_leader_id)) => {
                                     let mut cm = heartbeat_cm.lock().unwrap();
                                     if !reply.success && reply.term > current_term {
-                                        cm.become_follower(reply.term);
+                                        cm.become_follower(reply.term, reply_leader_id);
                                         // current_term = reply.term;
                                     }
                                 }
                                 Err(e) => debug!("AppendEntries RPC失败: {}", e),
                             }
                         });
+                    }
+
+                    {
+                        let mut cm = heartbeat_cm.lock().unwrap();
+                        cm.self_last_heart_beat = Instant::now();
+                        // if cm.id == 0 {
+                        //     debug_println(String::from("node_0 heartbeat"));
+                        // }
+                        if cm.id == cm.leader_id {
+                            cm.reset_election_timer();
+                        }
                     }
                 }
 
@@ -487,9 +488,10 @@ impl ConsensusModule {
     }
 
     /// 转变为跟随者状态
-    fn become_follower(&mut self, term: i32) {
+    fn become_follower(&mut self, term: i32, leader_id: i32) {
         debug!("[{}] 变为Follower, term={}", self.id, term);
         self.state = CMState::Follower;
+        self.leader_id = leader_id;
         self.current_term = term;
         self.voted_for = None;
         self.reset_election_timer();
@@ -537,7 +539,7 @@ impl ConsensusModule {
         if args.term > self.current_term {
             debug!("[{}] 发现更高的任期: local={}, remote={}", 
                 self.id, self.current_term, args.term);
-            self.become_follower(args.term);
+            self.become_follower(args.term, args.candidate_id);
         }
 
         // 如果还没有投票，或者已经投给了这个候选人
@@ -564,7 +566,7 @@ impl ConsensusModule {
     pub fn append_entries(&mut self, args: AppendEntriesArgs) -> AppendEntriesReply {
         if self.state == CMState::Dead {
             return AppendEntriesReply {
-                term: self.current_term,
+                term: 0,
                 success: false,
             };
         }
@@ -581,18 +583,18 @@ impl ConsensusModule {
         // 如果leader的任期大于当前任期，更新当前任期并转为follower
         if args.term > self.current_term {
             debug!("[{}] 发现更大的任期: term={}", self.id, args.term);
-            self.become_follower(args.term);
-        }
-
-        if args.self_node_id == self.leader_id{
-            // 重置选举超时计时器
-            self.reset_election_timer();
+            self.become_follower(args.term, args.leader_id);
         }
 
         // 如果是候选人且收到合法的AppendEntries，转为follower
         if self.state == CMState::Candidate && args.term >= self.current_term {
             debug!("[{}] 候选人收到合法的追加日志请求，转为follower", self.id);
-            self.become_follower(args.term);
+            self.become_follower(args.term, args.leader_id);
+        }
+
+        if args.self_node_id == self.leader_id{
+            // 重置选举超时计时器
+            self.reset_election_timer();
         }
 
         // 需要添加更新心跳时间, 加入节点的功能
@@ -648,11 +650,12 @@ pub struct RaftCluster {
 }
 
 impl RaftCluster {
-    /// 创建新的 Raft 集群并指定初始领导者
-    pub async fn new_with_leader(leader_id: i32) -> Result<Self> {
+    /// 创建新的 Raft 集群并指定初始领导者, 以及有成为领导者资质的node_id
+    pub async fn new_with_leader(leader_id: i32, leaders: Vec<i32>) -> Result<Self> {
         let mut cluster = Self::new().await?;
-        // 节点2设置为leader潜力节点
-        cluster.set_want_be_leader(2).expect("-------------not fount index 2-------------");
+        for (_, &v) in leaders.iter().enumerate() {
+            cluster.set_want_be_leader(v).expect("-------------not fount index 2-------------");
+        }
         // 先将所有节点初始化为跟随者
         for i in 0..5 {
             let cm = cluster.get_cm(i)?;
@@ -743,6 +746,18 @@ impl RaftCluster {
         }
         debug_println(String::from("当前没有领导者"));
         debug!("当前没有领导者");
+        None
+    }
+
+    /// 通过id查询对应共识协议的信息,
+    /// 包括id, leader_id, current_term, state, peer_ids
+    pub fn get_cm_info_by_id(&self, id: i32) -> Option<(i32, i32, i32, CMState, Vec<i32> )> {
+        for (_, tmp_cm) in self.cm_list.iter().enumerate() {
+            let cm = tmp_cm.lock().unwrap();
+            if cm.id == id {
+                return Some((cm.id, cm.leader_id, cm.current_term, cm.state, cm.peer_ids.clone()));
+            }
+        }
         None
     }
 
