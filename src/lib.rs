@@ -55,6 +55,7 @@ pub struct RequestVoteArgs {
 pub struct RequestVoteReply {
     pub term: i32,
     pub vote_granted: bool,
+    pub leader_id: i32,
 }
 
 /// 附加条目RPC的参数
@@ -74,6 +75,7 @@ pub struct AppendEntriesArgs {
 pub struct AppendEntriesReply {
     pub term: i32,
     pub success: bool,
+    pub leader_id: i32,
 }
 
 pub fn debug_println(string: String){
@@ -100,7 +102,7 @@ impl RPCProxy {
     }
 
     /// 处理网络连接中投票请求
-    pub async fn request_vote(&self, server_id: i32, args: RequestVoteArgs) -> Result<(RequestVoteReply, i32)> {
+    pub async fn request_vote(&self, server_id: i32, args: RequestVoteArgs) -> Result<RequestVoteReply> {
         // // 模拟不可靠的网络连接
         // if std::env::var("RAFT_UNRELIABLE_RPC").is_ok() {
         //     let dice = {
@@ -130,14 +132,14 @@ impl RPCProxy {
             let tmp = Arc::clone(v);
             let mut cm = tmp.lock().unwrap();
             if cm.id == server_id {
-                return Ok((cm.request_vote(args), cm.leader_id));
+                return Ok(cm.request_vote(args));
             }
         }
         Err(anyhow::anyhow!("Invalid server ID"))
     }
 
-    /// 处理网络连接中追加请求
-    pub async fn append_entries(&self, server_id: i32, args: AppendEntriesArgs) -> Result<(AppendEntriesReply, i32)> {
+    /// 处理网络连接中心跳信息
+    pub async fn append_entries(&self, server_id: i32, args: AppendEntriesArgs) -> Result<AppendEntriesReply> {
         // // 模拟不可靠的网络连接
         // if std::env::var("RAFT_UNRELIABLE_RPC").is_ok() {
         //     let dice = {
@@ -167,7 +169,7 @@ impl RPCProxy {
             let tmp = Arc::clone(v);
             let mut cm = tmp.lock().unwrap();
             if cm.id == server_id {
-                return Ok((cm.append_entries(args), cm.leader_id));
+                return Ok(cm.append_entries(args));
             }
         }
         Err(anyhow::anyhow!("Invalid server ID"))
@@ -222,6 +224,7 @@ impl Server {
         // 选举处理
         tokio::spawn(async move {
             loop {
+                let mut sleep_time = 100;
                 // 检查是否需要开始选举
                 let should_start_election = {
                     let mut cm = election_cm.lock().unwrap();
@@ -232,8 +235,12 @@ impl Server {
                     // if cm.election_reset_event.elapsed() >= cm.election_timeout_max {
                     //     debug_println(String::from("节点").add(cm.id.to_string().as_str()).add("发现leader心跳超时"));
                     // }
-                    if cm.state == CMState::Leader && cm.election_reset_event.elapsed() > cm.election_timeout_max {
+                    if cm.state == CMState::Leader && cm.self_last_heart_beat.elapsed() > cm.heart_beat_timeout_max {
+                        // 如果本来是leader但是掉线了, 则暂时不参与选举, 并将状态转换为follower
                         cm.state = CMState::Follower;
+                        cm.election_reset_event = Instant::now();
+                        // 掉线后先通过心跳更新几轮
+                        sleep_time = 400;
                         false
                     }else if want_be_leader == false || cm.state == CMState::Dead {
                         // if cm.id == 2 {
@@ -246,7 +253,6 @@ impl Server {
                         true
                     }
                 };
-
                 if should_start_election {
                     // 开始新的选举
                     let (current_term, peer_ids) = {
@@ -269,14 +275,14 @@ impl Server {
 
                         tokio::spawn(async move {
                             match rpc_proxy.request_vote(peer_id, args).await {
-                                Ok((reply, reply_leader_id)) => {
+                                Ok(reply) => {
                                     let mut cm = election_cm.lock().unwrap();
                                     if reply.vote_granted {
                                         cm.votes_received += 1;
                                     } else if reply.term > current_term {
-                                        cm.become_follower(reply.term, reply_leader_id);
-                                    } else if reply.term >= current_term && reply_leader_id != cm.id {
-                                        cm.become_follower(reply.term, reply_leader_id);
+                                        cm.become_follower(reply.term, reply.leader_id);
+                                    } else if reply.term >= current_term && reply.leader_id != cm.id {
+                                        cm.become_follower(reply.term, reply.leader_id);
                                     }
                                 }
                                 Err(e) => debug!("RequestVote RPC失败: {}", e),
@@ -293,7 +299,7 @@ impl Server {
                 }
 
                 // 等待一段时间再检查
-                time::sleep(Duration::from_millis(100)).await;
+                time::sleep(Duration::from_millis(sleep_time)).await;
             }
         });
 
@@ -338,13 +344,13 @@ impl Server {
 
                         tokio::spawn(async move {
                             match rpc_proxy.append_entries(peer_id, args).await {
-                                Ok((reply, reply_leader_id)) => {
+                                Ok(reply) => {
                                     let mut cm = heartbeat_cm.lock().unwrap();
                                     if !reply.success && reply.term > current_term {
-                                        cm.become_follower(reply.term, reply_leader_id);
+                                        cm.become_follower(reply.term, reply.leader_id);
                                         // current_term = reply.term;
                                     } else if reply.term > cm.current_term && (cm.state == CMState::Leader || cm.state == CMState::Candidate) {
-                                        cm.become_follower(reply.term, reply_leader_id);
+                                        cm.become_follower(reply.term, reply.leader_id);
                                     }
                                 }
                                 Err(e) => debug!("AppendEntries RPC失败: {}", e),
@@ -390,7 +396,7 @@ impl Server {
                     let mut cm = del_cm.lock().unwrap();
                     let mut del_vec = Vec::new();
                     for (i, &v) in cm.heart_beat_events.iter().enumerate() {
-                        if v.elapsed() > cm.heart_beat_timeout {
+                        if v.elapsed() > cm.heart_beat_timeout_max {
                             del_vec.push(i);
                         }
                     }
@@ -433,9 +439,9 @@ pub struct ConsensusModule {
     election_timeout_min: Duration,          // 最小选举超时时间
     election_timeout_max: Duration,          // 最大选举超时时间
     self_last_heart_beat: Instant,           // 自己上次心跳时间
-    heart_beat_timeout_min: Duration,        // 最小心跳时间
     heart_beat_events: Vec<Instant>,         // 上次收到其他节点的心跳时间
-    heart_beat_timeout: Duration,            // 最大心跳超时时间
+    heart_beat_timeout_min: Duration,        // 最小心跳超时时间
+    heart_beat_timeout_max: Duration,        // 最大心跳超时时间
     votes_received: i32,                     // 收到的投票数
     commit_index: i32,                       // 已提交的最高日志索引
     last_applied: i32,                       // 已应用到状态机的最高日志索引
@@ -460,9 +466,9 @@ impl ConsensusModule {
             election_timeout_min: Duration::from_millis(200),
             election_timeout_max: Duration::from_millis(400),
             self_last_heart_beat: Instant::now(),
-            heart_beat_timeout_min: Duration::from_millis(40),
             heart_beat_events: Vec::new(),
-            heart_beat_timeout: Duration::from_millis(100),
+            heart_beat_timeout_min: Duration::from_millis(40),
+            heart_beat_timeout_max: Duration::from_millis(100),
             votes_received: 0,
             commit_index: -1,
             last_applied: -1,
@@ -476,6 +482,8 @@ impl ConsensusModule {
     }
 
     /// 返回选举超时时间
+    ///
+    /// 随机超时机制, 减小同时选举的可能
     fn election_timeout(&self) -> Duration {
         let base = self.election_timeout_min.as_millis(); // 基础超时时间
         let rand = rand::random::<u128>() % (self.election_timeout_max - self.election_timeout_min).as_millis();
@@ -532,6 +540,7 @@ impl ConsensusModule {
             return RequestVoteReply {
                 term: self.current_term,
                 vote_granted: false,
+                leader_id: args.candidate_id,
             };
         }
 
@@ -540,6 +549,7 @@ impl ConsensusModule {
             return RequestVoteReply {
                 term: self.current_term,
                 vote_granted: false,
+                leader_id: self.leader_id,
             };
         }
 
@@ -559,6 +569,7 @@ impl ConsensusModule {
             return RequestVoteReply {
                 term: self.current_term,
                 vote_granted: true,
+                leader_id: args.candidate_id,
             };
         }
 
@@ -566,6 +577,7 @@ impl ConsensusModule {
         RequestVoteReply {
             term: self.current_term,
             vote_granted: false,
+            leader_id: self.leader_id,
         }
     }
 
@@ -575,6 +587,7 @@ impl ConsensusModule {
             return AppendEntriesReply {
                 term: 0,
                 success: false,
+                leader_id: args.leader_id,
             };
         }
 
@@ -606,18 +619,13 @@ impl ConsensusModule {
             return AppendEntriesReply {
                 term: self.current_term,
                 success: false,
+                leader_id: self.leader_id,
             };
         }
 
         // 如果leader的任期大于当前任期，更新当前任期并转为follower
         if args.term > self.current_term {
             debug!("[{}] 发现更大的任期: term={}", self.id, args.term);
-            self.become_follower(args.term, args.leader_id);
-        }
-
-        // 如果是候选人且收到合法的AppendEntries，转为follower
-        if self.state == CMState::Candidate && args.term >= self.current_term {
-            debug!("[{}] 候选人收到合法的追加日志请求，转为follower", self.id);
             self.become_follower(args.term, args.leader_id);
         }
 
@@ -629,6 +637,7 @@ impl ConsensusModule {
         AppendEntriesReply {
             term: self.current_term,
             success: true,
+            leader_id: args.leader_id,
         }
     }
 

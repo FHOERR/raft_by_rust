@@ -215,7 +215,7 @@ async fn test_node1_revive() -> Result<()> {
     time::sleep(Duration::from_secs(1)).await;
 
     let mut tmp_debug_str = String::from("节点0 1死亡状态下其他节点稳定后情况:\n");
-    for i in 2..5 {
+    for i in 0..5 {
         if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers)) = cluster.get_cm_info_by_id(i) {
             tmp_debug_str.push_str(&format!(
                 "node_{}\nleader_id={}\nterm={}\nstate={}\npeers={}\n\n",
