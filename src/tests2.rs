@@ -177,8 +177,28 @@ async fn test_node0_revive() -> Result<()> {
 async fn test_node1_revive() -> Result<()> {
     // 创建一个新的集群，并将节点0设置为领导者
     let cluster = RaftCluster::new_with_leader(0, Vec::from([1, 2])).await?;
+    // let mut tmp_debug_str = String::from("初始情况下情况:\n");
+    // for i in 0..5 {
+    //     if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers)) = cluster.get_cm_info_by_id(i) {
+    //         tmp_debug_str.push_str(&format!(
+    //             "node_{}\nleader_id={}\nterm={}\nstate={}\npeers={}\n\n",
+    //             tmp_id, tmp_leader_id, tmp_term, tmp_state, format!("{:?}", tmp_peers)
+    //         ));
+    //     }
+    // }
+    // debug_println(tmp_debug_str);
     // 等待集群稳定
     time::sleep(Duration::from_millis(100)).await;
+    // let mut tmp_debug_str = String::from("初始情况下稳定后情况:\n");
+    // for i in 0..5 {
+    //     if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers)) = cluster.get_cm_info_by_id(i) {
+    //         tmp_debug_str.push_str(&format!(
+    //             "node_{}\nleader_id={}\nterm={}\nstate={}\npeers={}\n\n",
+    //             tmp_id, tmp_leader_id, tmp_term, tmp_state, format!("{:?}", tmp_peers)
+    //         ));
+    //     }
+    // }
+    // debug_println(tmp_debug_str);
     // 验证节点0是领导者
     let (current_leader, term) = cluster.get_leader().ok_or_else(|| anyhow::anyhow!("没有领导者"))?;
     debug_println(String::from("初始领导者为").add(current_leader.to_string().as_str())

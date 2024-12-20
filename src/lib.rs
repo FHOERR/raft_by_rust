@@ -224,7 +224,7 @@ impl Server {
             loop {
                 // 检查是否需要开始选举
                 let should_start_election = {
-                    let cm = election_cm.lock().unwrap();
+                    let mut cm = election_cm.lock().unwrap();
                     want_be_leader = cm.want_be_leader.clone();
                     if cm.end_thread {
                         return
@@ -232,7 +232,10 @@ impl Server {
                     // if cm.election_reset_event.elapsed() >= cm.election_timeout_max {
                     //     debug_println(String::from("节点").add(cm.id.to_string().as_str()).add("发现leader心跳超时"));
                     // }
-                    if want_be_leader == false || cm.state == CMState::Dead {
+                    if cm.state == CMState::Leader && cm.election_reset_event.elapsed() > cm.election_timeout_max {
+                        cm.state = CMState::Follower;
+                        false
+                    }else if want_be_leader == false || cm.state == CMState::Dead {
                         // if cm.id == 2 {
                         //     debug_println(String::from("节点二尝试成为新leader失败1"));
                         // }
@@ -271,6 +274,8 @@ impl Server {
                                     if reply.vote_granted {
                                         cm.votes_received += 1;
                                     } else if reply.term > current_term {
+                                        cm.become_follower(reply.term, reply_leader_id);
+                                    } else if reply.term >= current_term && reply_leader_id != cm.id {
                                         cm.become_follower(reply.term, reply_leader_id);
                                     }
                                 }
@@ -338,6 +343,8 @@ impl Server {
                                     if !reply.success && reply.term > current_term {
                                         cm.become_follower(reply.term, reply_leader_id);
                                         // current_term = reply.term;
+                                    } else if reply.term > cm.current_term && (cm.state == CMState::Leader || cm.state == CMState::Candidate) {
+                                        cm.become_follower(reply.term, reply_leader_id);
                                     }
                                 }
                                 Err(e) => debug!("AppendEntries RPC失败: {}", e),
@@ -571,6 +578,28 @@ impl ConsensusModule {
             };
         }
 
+        // 需要添加更新心跳时间, 加入节点的功能
+        let mut tmp_index = self.peer_ids.len();
+        if !self.peer_ids.is_empty() {
+            for (i,&v) in self.peer_ids.iter().enumerate() {
+                if v == args.self_node_id {
+                    tmp_index = i;
+                    break;
+                }
+            }
+        }
+        // debug_println(String::from("tmp_index = ").add(tmp_index.to_string().as_str())
+        //     .add("\npeer_ids.len = ").add(self.peer_ids.len().to_string().as_str())
+        //     .add("\nheart_beat_events = ").add(self.heart_beat_events.len().to_string().as_str()));
+        if tmp_index >= self.peer_ids.len() {
+            // 新建节点
+            self.peer_ids.push(args.self_node_id);
+            self.heart_beat_events.push(Instant::now());
+        }else{
+            // 更新心跳
+            self.heart_beat_events[tmp_index] = Instant::now();
+        }
+
         // 如果leader的任期小于当前任期，拒绝请求
         if args.term < self.current_term {
             debug!("[{}] 拒绝追加日志: leader_term({}) < current_term({})", self.id, args.term, self.current_term);
@@ -597,28 +626,6 @@ impl ConsensusModule {
             self.reset_election_timer();
         }
 
-        // 需要添加更新心跳时间, 加入节点的功能
-        let mut tmp_index = self.peer_ids.len();
-        if !self.peer_ids.is_empty() {
-            for (i,&v) in self.peer_ids.iter().enumerate() {
-                if v == args.self_node_id {
-                    tmp_index = i;
-                    break;
-                }
-            }
-        }
-        // debug_println(String::from("tmp_index = ").add(tmp_index.to_string().as_str())
-        //     .add("\npeer_ids.len = ").add(self.peer_ids.len().to_string().as_str())
-        //     .add("\nheart_beat_events = ").add(self.heart_beat_events.len().to_string().as_str()));
-        if tmp_index >= self.peer_ids.len() {
-            // 新建节点
-            self.peer_ids.push(args.self_node_id);
-            self.heart_beat_events.push(Instant::now());
-        }else{
-            // 更新心跳
-            self.heart_beat_events[tmp_index] = Instant::now();
-        }
-
         AppendEntriesReply {
             term: self.current_term,
             success: true,
@@ -635,6 +642,7 @@ impl ConsensusModule {
         self.state = CMState::Candidate;
         self.voted_for = Some(self.id);
         self.votes_received = 1;  // 给自己投票
+        self.leader_id = self.id;
         
         debug!("[{}] 开始选举: term={}", self.id, self.current_term);
         
@@ -697,7 +705,7 @@ impl RaftCluster {
             let (ready_tx, ready_rx) = mpsc::channel(1);
             let peer_ids: Vec<i32> = (0..5).filter(|&x| x != i).collect();
             
-            let server = Server::new(i, peer_ids, ready_rx);
+            let server = Server::new(i, peer_ids.clone(), ready_rx);
             cm_list.push(Arc::clone(&server.cm));
             // if i == 2 {
             //     server.want_be_leader = true;
