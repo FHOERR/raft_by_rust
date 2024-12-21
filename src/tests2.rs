@@ -28,6 +28,7 @@ async fn test_leader_stop_election() -> Result<()> {
     time::sleep(Duration::from_secs(1)).await;
 
     // 检查是否有新的领导者被选出
+
     if let Some((new_leader, new_term)) = cluster.get_leader() {
         // 验证新领导者不是节点0
         assert_ne!(new_leader, 0, "新领导者不应该是节点0");

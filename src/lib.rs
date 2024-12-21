@@ -2,7 +2,6 @@
 mod tests2;
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -15,12 +14,132 @@ use anyhow::Result;
 use log::debug;
 use rand::{Rng, rngs::OsRng};
 use serde::{Deserialize, Serialize};
+use regex::Regex;
 
-/// 表示日志条目,包含命令和任期号
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// 表示日志条目,包含任期号, 块高, leader_id, 要传递的信息
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct LogEntry {
     pub term: i32,
-    pub command: String,
+    pub height: i32,
+    pub leader_id: i32,
+    pub is_apply: bool,
+    pub info: String,
+}
+
+impl LogEntry {
+    pub fn new(term: i32, height:i32, leader_id: i32, info: String) -> LogEntry {
+        LogEntry {
+            term,
+            height,
+            leader_id,
+            is_apply: false,
+            info,
+        }
+
+    }
+
+    /// 编码
+    pub fn encode(&self) -> String {
+        let string = String::from(format!(
+            "LogEntry information: term= {}, height= {}, leader_id= {}, is_apply= {}, info= {}",
+            self.term, self.height, self.leader_id, self.is_apply, self.info.clone()
+        ));
+        Self::encrypt(string)
+    }
+
+    /// 解码
+    pub fn decode(string: String) -> Result<LogEntry> {
+        let tmp_str = Self::decrypt(string);
+        // debug_println(String::from("解码:\n当前文本为:\n").add(tmp_str.as_str()).add("/end"));
+        let re = Regex::new(r"LogEntry information: term= (\d*), height= (\d*), leader_id= (\d*), is_apply= ([a-z]*), info= (\w*)").unwrap();
+
+        if let Some(caps) = re.captures(&tmp_str) {
+            let term = caps[1].parse::<i32>().unwrap();
+            let height = caps[2].parse::<i32>().unwrap();
+            let leader_id = caps[3].parse::<i32>().unwrap();
+            let is_apply = caps[4].parse::<bool>().unwrap();
+            let info: String = caps[5].to_string();
+            // debug_println(String::from("解码成功"));
+            Ok(LogEntry {
+                term,
+                height,
+                leader_id,
+                is_apply,
+                info,
+            })
+        }else{
+            Err(anyhow::Error::msg("解码错误"))
+        }
+    }
+
+    /// 加密
+    pub fn encrypt(string: String) -> String {
+        // 不具体实现
+        String::from(string)
+    }
+
+    /// 解密
+    pub fn decrypt(string: String) -> String {
+        String::from(string)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct WSL {
+    pub id: i32,
+    pub logs: Vec<LogEntry>,
+    pub local_path: String,
+}
+
+impl WSL {
+    pub fn new(id: i32) -> WSL {
+        WSL {
+            id,
+            logs: Vec::new(),
+            local_path: String::from("WSL_data/node_").add(id.to_string().as_str()).add("_WSL"),
+        }
+    }
+
+    /// 检查收到的区块string是否合法, 不需要decode后调用.
+    /// 即String为加密状态
+    pub fn check_block_by_string(&self, _string: String) -> bool {
+        // 不进行具体实现了
+        true
+    }
+
+    /// 检查区块结构体LogEntry是否合法
+    pub fn check_block_by_entry(&self, log_entry: LogEntry) -> bool {
+        self.check_block_by_string(log_entry.encode())
+    }
+
+    /// 获取最新日志
+    pub fn get_newest(&self) -> LogEntry {
+        if let Some(last_log) = self.logs.last() {
+            last_log.clone()
+        }else{
+            LogEntry::new(0,0,0,String::from(""))
+        }
+    }
+
+    /// 是否要打包交易成区块.
+    /// 理论上需要检测交易数量, 达标了才打包
+    pub fn check_should_package(&self) -> bool {
+        // 不具体实现
+        let tmp_rand = rand::random::<u32>() % (12u32);
+        if tmp_rand > 0 {
+            false
+        }else{
+            true
+        }
+    }
+
+    /// 将交易打包成区块.
+    /// 没写交易具体传递的细节, 所以不具体实现, 直接生成一个区块
+    pub fn make_block(&self, term: i32, height: i32, leader_id: i32) -> LogEntry {
+        LogEntry::new(term, height, leader_id, String::from("block information: term=")
+            .add(term.to_string().as_str()).add(" height=").add(height.to_string().as_str())
+            .add(" leader_id=").add(leader_id.to_string().as_str()))
+    }
 }
 
 /// 表示节点状态的枚举类型
@@ -58,7 +177,7 @@ pub struct RequestVoteReply {
     pub leader_id: i32,
 }
 
-/// 附加条目RPC的参数
+/// 心跳RPC的参数
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AppendEntriesArgs {
     pub term: i32,
@@ -70,7 +189,7 @@ pub struct AppendEntriesArgs {
     pub self_node_id: i32,
 }
 
-/// 附加条目RPC的响应
+/// 心跳RPC的响应
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AppendEntriesReply {
     pub term: i32,
@@ -78,11 +197,27 @@ pub struct AppendEntriesReply {
     pub leader_id: i32,
 }
 
+/// 消息RPC的参数
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendMsgArgs {
+    pub id: i32,
+    pub log_entry: String,
+}
+
+/// 请求投票RPC的响应
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendMsgReply {
+    pub term: i32,
+    pub height: i32,
+    pub leader_id: i32,
+    pub success: bool,
+}
+
 pub fn debug_println(string: String){
     println!("\
-    ====================================================================================\n\n\n\
+    /=====================```````````````````````````````````````=====================\\\n\n\n\
      {} \n\n\n\
-    ====================================================================================\n", string);
+    \\=====================.......................................=====================/\n", string);
 }
 
 /// 模拟共识算法中的网络连接
@@ -175,6 +310,43 @@ impl RPCProxy {
         Err(anyhow::anyhow!("Invalid server ID"))
     }
 
+    /// 处理网络连接中区块消息
+    pub async fn send_msg(&self, server_id: i32, send_msg_args: SendMsgArgs) -> Result<SendMsgReply> {
+        // // 模拟不可靠的网络连接
+        // if std::env::var("RAFT_UNRELIABLE_RPC").is_ok() {
+        //     let dice = {
+        //         let mut rng = self.rng.lock().unwrap();
+        //         rng.gen_range(0..10)
+        //     };
+        //     if dice == 9 {
+        //         // 模拟丢弃请求
+        //         debug!("丢弃AppendEntries");
+        //         time::sleep(Duration::from_millis(75)).await;
+        //         return Err(anyhow::anyhow!("RPC失败"));
+        //     } else if dice == 8 {
+        //         // 模拟RPC传输中的巨大延迟
+        //         time::sleep(Duration::from_millis(50)).await;
+        //     }
+        // } else {
+        // 模拟RPC传输中的延迟
+        let delay = {
+            let mut rng = self.rng.lock().unwrap();
+            1 + rng.gen_range(0..3)
+        };
+        time::sleep(Duration::from_millis(delay)).await;
+        // }
+
+        // 获取目标节点的共识模块
+        for (_, v) in self.cm_list.iter().enumerate() {
+            let tmp = Arc::clone(v);
+            let mut cm = tmp.lock().unwrap();
+            if cm.id == server_id {
+                return Ok(cm.send_msg(send_msg_args.log_entry));
+            }
+        }
+        Err(anyhow::anyhow!("Invalid server ID"))
+    }
+
     /// 获取指定服务器的共识模块
     pub fn get_cm(&self, server_id: i32) -> Result<Arc<Mutex<ConsensusModule>>> {
         self.cm_list
@@ -184,6 +356,7 @@ impl RPCProxy {
     }
 }
 
+#[allow(dead_code)]
 /// Server包装了ConsensusModule并管理RPC通信
 pub struct Server {
     server_id: i32,
@@ -197,7 +370,7 @@ pub struct Server {
 
 impl Server {
     /// 创建新的服务器实例
-    pub fn new(id: i32, peer_ids: Vec<i32>, ready: mpsc::Receiver<()>) -> Self {
+    pub fn new(id: i32, peer_ids: Vec<i32>) -> Self {
         let cm = ConsensusModule::new(id, peer_ids.clone());
         Server {
             server_id: id,
@@ -219,7 +392,6 @@ impl Server {
         let election_cm = Arc::clone(&self.cm);
         let election_rpc = self.rpc_proxy.clone();
         let server_id = self.server_id;
-        let mut want_be_leader = false;
 
         // 选举处理
         tokio::spawn(async move {
@@ -228,7 +400,6 @@ impl Server {
                 // 检查是否需要开始选举
                 let should_start_election = {
                     let mut cm = election_cm.lock().unwrap();
-                    want_be_leader = cm.want_be_leader.clone();
                     if cm.end_thread {
                         return
                     }
@@ -242,7 +413,7 @@ impl Server {
                         // 掉线后先通过心跳更新几轮
                         sleep_time = 400;
                         false
-                    }else if want_be_leader == false || cm.state == CMState::Dead {
+                    }else if cm.want_be_leader == false || cm.state == CMState::Dead {
                         // if cm.id == 2 {
                         //     debug_println(String::from("节点二尝试成为新leader失败1"));
                         // }
@@ -408,6 +579,96 @@ impl Server {
                 time::sleep(Duration::from_millis(200)).await;
             }
         });
+
+        // 消息发送
+        let msg_cm = Arc::clone(&self.cm);
+        let msg_rpc = self.rpc_proxy.clone();
+        tokio::spawn(async move {
+            loop {
+                let (should_send_receive, is_leader) = {
+                    let cm = msg_cm.lock().unwrap();
+                    if cm.end_thread {
+                        return;
+                    }
+                    if cm.state == CMState::Dead {
+                        (false, cm.leader_id == cm.id)
+                    } else {
+                        (true, cm.leader_id == cm.id)
+                    }
+                };
+                if should_send_receive && is_leader{
+                    let mut peer_ids = Vec::new();
+                    let mut tmp_block: LogEntry;
+                    let mut node_id: i32;
+                    {
+                        let mut cm = msg_cm.lock().unwrap();
+                        if !cm.log.check_should_package() {
+                            continue;
+                        }
+                        peer_ids = cm.peer_ids.clone();
+                        tmp_block = cm.log.make_block(cm.current_term, cm.log.get_newest().height + 1, cm.leader_id);
+                        node_id = cm.id;
+                        cm.apply_log_vote_received = 0;
+                    }
+                    let mut msg_string = tmp_block.encode();
+
+                    for &peer_id in &peer_ids {
+                        let args = SendMsgArgs {
+                            id: node_id,
+                            log_entry: msg_string.clone(),
+                        };
+                        let rpc_proxy = msg_rpc.clone().unwrap();
+                        let send_cm = Arc::clone(&msg_cm);
+                        tokio::spawn(async move {
+                            match rpc_proxy.send_msg(peer_id, args).await {
+                                Ok(reply) => {
+                                    let mut cm = send_cm.lock().unwrap();
+                                    if !reply.success && (reply.term > cm.current_term || reply.height > tmp_block.height) {
+                                        cm.become_follower(reply.term, reply.leader_id);
+                                        cm.last_applied = reply.height;
+                                        cm.current_term = reply.term;
+                                        cm.apply_log_vote_received = -1000000000;
+                                        return
+                                    }
+                                    cm.apply_log_vote_received += 1;
+                                }
+                                Err(e) => {
+                                    debug!("SendMsg RPC失败: {}", e)
+                                }
+                            }
+                        });
+                    }
+                    time::sleep(Duration::from_millis(40)).await;
+                    {
+                        let mut cm = msg_cm.lock().unwrap();
+                        if cm.apply_log_vote_received * 2 > (cm.peer_ids.len() + 1) as i32 {
+                            tmp_block.is_apply = true;
+                            msg_string = tmp_block.encode();
+                            cm.last_applied = tmp_block.height;
+                            cm.log.logs.push(tmp_block);
+                            for &peer_id in &peer_ids {
+                                let args = SendMsgArgs {
+                                    id: node_id,
+                                    log_entry: msg_string.clone(),
+                                };
+                                let rpc_proxy = msg_rpc.clone().unwrap();
+                                tokio::spawn(async move {
+                                    match rpc_proxy.send_msg(peer_id, args).await {
+                                        Ok(_) => {
+                                        }
+                                        Err(e) => {
+                                            debug!("SendMsg RPC失败: {}", e)
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+                time::sleep(Duration::from_millis(10)).await;
+
+            }
+        });
         Ok(())
     }
 
@@ -426,14 +687,17 @@ impl Server {
     }
 }
 
+#[allow(dead_code)]
 /// ConsensusModule实现了Raft共识的单个节点
 pub struct ConsensusModule {
-    id: i32,                                  // 节点ID
+    id: i32,                                 // 节点ID
     peer_ids: Vec<i32>,                      // 其他节点的ID列表
     leader_id: i32,                          // leader id
     current_term: i32,                       // 当前任期
     voted_for: Option<i32>,                  // 在当前任期投票给谁
-    log: Vec<LogEntry>,                      // 日志条目
+    log: WSL,                                // 日志
+    apply_log_vote_received:i32,             // 当前发送的日志接受票数
+    is_spv: bool,                            // 是否SPV节点
     state: CMState,                          // 当前状态
     election_reset_event: Instant,           // 上次重置选举计时器的时间
     election_timeout_min: Duration,          // 最小选举超时时间
@@ -445,8 +709,6 @@ pub struct ConsensusModule {
     votes_received: i32,                     // 收到的投票数
     commit_index: i32,                       // 已提交的最高日志索引
     last_applied: i32,                       // 已应用到状态机的最高日志索引
-    next_index: HashMap<i32, i32>,           // 每个follower的下一个日志索引
-    match_index: HashMap<i32, i32>,          // 每个follower已复制的最高日志索引
     end_thread: bool,                        // 结束tag
     want_be_leader: bool,                    // 想要变成leader
 }
@@ -460,7 +722,9 @@ impl ConsensusModule {
             leader_id: 0,
             current_term: 0,
             voted_for: None,
-            log: Vec::new(),
+            log: WSL::new(id),
+            apply_log_vote_received: 0,
+            is_spv: false,
             state: CMState::Follower,
             election_reset_event: Instant::now(),
             election_timeout_min: Duration::from_millis(200),
@@ -472,8 +736,6 @@ impl ConsensusModule {
             votes_received: 0,
             commit_index: -1,
             last_applied: -1,
-            next_index: HashMap::new(),
-            match_index: HashMap::new(),
             end_thread: false,
             want_be_leader: false,
         };
@@ -519,12 +781,7 @@ impl ConsensusModule {
         self.leader_id = self.id;
 
         // 初始化领导者状态
-        let log_len = self.log.len() as i32;
-        let peer_ids: Vec<i32> = self.peer_ids.iter().cloned().collect();
-        for &peer_id in &peer_ids {
-            self.next_index.insert(peer_id, log_len);
-            self.match_index.insert(peer_id, -1);
-        }
+        // TODO();
 
         self.reset_election_timer();
     }
@@ -641,6 +898,48 @@ impl ConsensusModule {
         }
     }
 
+    /// 处理区块消息
+    pub fn send_msg(&mut self, msg_string: String) -> SendMsgReply {
+        let log_entry = LogEntry::decode(msg_string.clone()).expect("decode失败");
+        if self.state == CMState::Dead {
+            return SendMsgReply {
+                term: self.current_term,
+                height: self.last_applied,
+                leader_id: log_entry.leader_id,
+                success: false,
+            };
+        }
+        if log_entry.term < self.current_term || log_entry.height <= self.last_applied {
+            return SendMsgReply {
+                term: self.current_term,
+                height: self.last_applied,
+                leader_id: self.leader_id,
+                success: false,
+            }
+        }
+        // 如果是应用的消息则应用, 如果是投票消息则投票
+        if log_entry.is_apply {
+            self.current_term = log_entry.term;
+            self.last_applied = log_entry.height;
+            self.leader_id = log_entry.leader_id;
+            self.log.logs.push(log_entry.clone());
+        }else if !self.log.check_block_by_string(msg_string) {
+            return SendMsgReply {
+                term: self.current_term,
+                height: self.last_applied,
+                leader_id: self.leader_id,
+                success: false,
+            }
+        }
+
+        SendMsgReply {
+            term: self.current_term,
+            height: self.last_applied,
+            leader_id: log_entry.leader_id,
+            success: true,
+        }
+    }
+
     /// 转变为候选人状态并开始选举
     fn start_election(&mut self) {
         if self.state == CMState::Dead {
@@ -659,6 +958,13 @@ impl ConsensusModule {
     }
 }
 
+// /// WSL日志系统
+// pub struct WSLSystem {
+//     id: i32,                    // 节点id
+//
+// }
+
+#[allow(dead_code)]
 /// RaftCluster 管理一组 Raft 节点
 pub struct RaftCluster {
     servers: Vec<Server>,
@@ -692,12 +998,7 @@ impl RaftCluster {
             cm.voted_for = Some(leader_id);
 
             // 初始化领导者状态
-            let log_len = cm.log.len() as i32;
-            let peer_ids: Vec<i32> = cm.peer_ids.iter().cloned().collect();
-            for &peer_id in &peer_ids {
-                cm.next_index.insert(peer_id, log_len);
-                cm.match_index.insert(peer_id, -1);
-            }
+            // TODO();
         }
         
         Ok(cluster)
@@ -711,10 +1012,10 @@ impl RaftCluster {
 
         // 创建五个节点
         for i in 0..5 {
-            let (ready_tx, ready_rx) = mpsc::channel(1);
+            let (ready_tx, _ready_rx) = mpsc::channel(1);
             let peer_ids: Vec<i32> = (0..5).filter(|&x| x != i).collect();
             
-            let server = Server::new(i, peer_ids.clone(), ready_rx);
+            let server = Server::new(i, peer_ids.clone());
             cm_list.push(Arc::clone(&server.cm));
             // if i == 2 {
             //     server.want_be_leader = true;
