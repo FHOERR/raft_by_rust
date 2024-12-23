@@ -167,6 +167,7 @@ impl std::fmt::Display for CMState {
 pub struct RequestVoteArgs {
     pub term: i32,
     pub candidate_id: i32,
+    pub last_apply: i32,
 }
 
 /// 请求投票RPC的响应
@@ -175,6 +176,7 @@ pub struct RequestVoteReply {
     pub term: i32,
     pub vote_granted: bool,
     pub leader_id: i32,
+    pub last_apply: i32,
 }
 
 /// 心跳RPC的参数
@@ -187,6 +189,7 @@ pub struct AppendEntriesArgs {
     pub entries: Vec<LogEntry>,
     pub leader_commit: i32,
     pub self_node_id: i32,
+    pub last_apply: i32,
 }
 
 /// 心跳RPC的响应
@@ -195,6 +198,7 @@ pub struct AppendEntriesReply {
     pub term: i32,
     pub success: bool,
     pub leader_id: i32,
+    pub last_apply: i32,
 }
 
 /// 消息RPC的参数
@@ -426,11 +430,11 @@ impl Server {
                 };
                 if should_start_election {
                     // 开始新的选举
-                    let (current_term, peer_ids) = {
+                    let (current_term, peer_ids, last_apply) = {
                         let mut cm = election_cm.lock().unwrap();
                         cm.start_election();
                         debug_println(String::from("节点").add(cm.id.to_string().as_str()).add("尝试成为新leader"));
-                        (cm.current_term, cm.peer_ids.clone())
+                        (cm.current_term, cm.peer_ids.clone(), cm.last_applied.clone())
                     };
 
                     // 向所有对等节点发送请求投票RPC
@@ -438,6 +442,7 @@ impl Server {
                         let args = RequestVoteArgs {
                             term: current_term,
                             candidate_id: server_id,
+                            last_apply,
                         };
 
                         // 克隆需要的值用于async块
@@ -450,7 +455,7 @@ impl Server {
                                     let mut cm = election_cm.lock().unwrap();
                                     if reply.vote_granted {
                                         cm.votes_received += 1;
-                                    } else if reply.term > current_term {
+                                    } else if reply.term > current_term || reply.last_apply > last_apply {
                                         cm.become_follower(reply.term, reply.leader_id);
                                     } else if reply.term >= current_term && reply.leader_id != cm.id {
                                         cm.become_follower(reply.term, reply.leader_id);
@@ -483,16 +488,16 @@ impl Server {
             loop {
                 let mut leader_id = server_id.clone();
                 // 检查是否需要发送心跳
-                let (should_send_heartbeat, current_term, peer_ids) = {
+                let (should_send_heartbeat, current_term, peer_ids, last_apply) = {
                     let cm = heartbeat_cm.lock().unwrap();
                     if cm.end_thread {
                         return
                     }
                     if cm.state == CMState::Dead || cm.self_last_heart_beat.elapsed() < cm.heart_beat_timeout_min {
-                        (false, 0, Vec::new())
+                        (false, 0, Vec::new(), 0)
                     } else {
                         leader_id = cm.leader_id.clone();
-                        (true, cm.current_term.clone(), cm.peer_ids.clone())
+                        (true, cm.current_term.clone(), cm.peer_ids.clone(), cm.last_applied.clone())
                     }
                 };
 
@@ -507,6 +512,7 @@ impl Server {
                             entries: Vec::new(),
                             leader_commit: 0,
                             self_node_id: server_id,
+                            last_apply,
                         };
 
                         // 克隆需要的值用于async块
@@ -520,7 +526,7 @@ impl Server {
                                     if !reply.success && reply.term > current_term {
                                         cm.become_follower(reply.term, reply.leader_id);
                                         // current_term = reply.term;
-                                    } else if reply.term > cm.current_term && (cm.state == CMState::Leader || cm.state == CMState::Candidate) {
+                                    } else if (reply.term > cm.current_term || reply.last_apply > cm.last_applied) && (cm.state == CMState::Leader || cm.state == CMState::Candidate) {
                                         cm.become_follower(reply.term, reply.leader_id);
                                     }
                                 }
@@ -597,9 +603,9 @@ impl Server {
                     }
                 };
                 if should_send_receive && is_leader{
-                    let mut peer_ids = Vec::new();
+                    let peer_ids: Vec<i32>;
                     let mut tmp_block: LogEntry;
-                    let mut node_id: i32;
+                    let node_id: i32;
                     {
                         let mut cm = msg_cm.lock().unwrap();
                         if !cm.log.check_should_package() {
@@ -779,9 +785,7 @@ impl ConsensusModule {
         debug!("[{}] 变为Leader, term={}", self.id, self.current_term);
         self.state = CMState::Leader;
         self.leader_id = self.id;
-
-        // 初始化领导者状态
-        // TODO();
+        self.last_applied += 1;
 
         self.reset_election_timer();
     }
@@ -798,19 +802,21 @@ impl ConsensusModule {
                 term: self.current_term,
                 vote_granted: false,
                 leader_id: args.candidate_id,
+                last_apply: self.last_applied,
             };
         }
 
-        if args.term < self.current_term {
-            debug!("[{}] 拒绝投票: 任期过低 local_term={}, term={}", self.id, self.current_term, args.term);
+        if args.term < self.current_term || args.last_apply < self.last_applied {
+            debug!("[{}] 拒绝投票: 任期过低/区块高度过低 local_term={}, term={}", self.id, self.current_term, args.term);
             return RequestVoteReply {
                 term: self.current_term,
                 vote_granted: false,
                 leader_id: self.leader_id,
+                last_apply: self.last_applied,
             };
         }
 
-        if args.term > self.current_term {
+        if args.term > self.current_term || args.last_apply > self.last_applied + 1 {
             debug!("[{}] 发现更高的任期: local={}, remote={}", 
                 self.id, self.current_term, args.term);
             self.become_follower(args.term, args.candidate_id);
@@ -827,6 +833,7 @@ impl ConsensusModule {
                 term: self.current_term,
                 vote_granted: true,
                 leader_id: args.candidate_id,
+                last_apply: self.last_applied,
             };
         }
 
@@ -835,6 +842,7 @@ impl ConsensusModule {
             term: self.current_term,
             vote_granted: false,
             leader_id: self.leader_id,
+            last_apply: self.last_applied,
         }
     }
 
@@ -845,6 +853,7 @@ impl ConsensusModule {
                 term: 0,
                 success: false,
                 leader_id: args.leader_id,
+                last_apply: self.last_applied,
             };
         }
 
@@ -871,17 +880,18 @@ impl ConsensusModule {
         }
 
         // 如果leader的任期小于当前任期，拒绝请求
-        if args.term < self.current_term {
+        if args.term < self.current_term || args.last_apply < self.last_applied {
             debug!("[{}] 拒绝追加日志: leader_term({}) < current_term({})", self.id, args.term, self.current_term);
             return AppendEntriesReply {
                 term: self.current_term,
                 success: false,
                 leader_id: self.leader_id,
+                last_apply: self.last_applied,
             };
         }
 
         // 如果leader的任期大于当前任期，更新当前任期并转为follower
-        if args.term > self.current_term {
+        if args.term > self.current_term || args.last_apply > self.last_applied + 1 {
             debug!("[{}] 发现更大的任期: term={}", self.id, args.term);
             self.become_follower(args.term, args.leader_id);
         }
@@ -895,6 +905,7 @@ impl ConsensusModule {
             term: self.current_term,
             success: true,
             leader_id: args.leader_id,
+            last_apply: self.last_applied,
         }
     }
 
@@ -996,9 +1007,6 @@ impl RaftCluster {
             cm.state = CMState::Leader;
             cm.current_term = 1;
             cm.voted_for = Some(leader_id);
-
-            // 初始化领导者状态
-            // TODO();
         }
         
         Ok(cluster)
