@@ -161,7 +161,7 @@ async fn test_node0_revive() -> Result<()> {
     }
     debug!("已设置节点0的end_thread为true");
     debug_println(String::from("节点0复活"));
-    time::sleep(Duration::from_secs(1)).await;
+    time::sleep(Duration::from_secs(2)).await;
 
     if let Some((_, tmp_leader_id, tmp_current_term, tmp_state, _, _, _)) = cluster.get_cm_info_by_id(0) {
         debug_println(String::from("节点0当前状态为\nleader_id=").add(tmp_leader_id.to_string().as_str())
@@ -311,9 +311,9 @@ async fn test_block_height() -> Result<()> {
         cm.state = CMState::Follower;
     }
 
-    time::sleep(Duration::from_secs(3)).await;
+    time::sleep(Duration::from_secs(4)).await;
 
-    tmp_debug_str = String::from("节点0 1复活3秒后情况:\n");
+    tmp_debug_str = String::from("节点0 1复活4秒后情况:\n");
     for i in 0..5 {
         if let Some((tmp_id, _, tmp_term, tmp_state, _, tmp_height, _)) = cluster.get_cm_info_by_id(i) {
             tmp_debug_str.push_str(&format!(

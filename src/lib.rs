@@ -86,18 +86,18 @@ impl LogEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct WSL {
+pub struct WAL {
     pub id: i32,
     pub logs: Vec<LogEntry>,
     pub local_path: String,
 }
 
-impl WSL {
-    pub fn new(id: i32) -> WSL {
-        WSL {
+impl WAL {
+    pub fn new(id: i32) -> WAL {
+        WAL {
             id,
             logs: Vec::new(),
-            local_path: String::from("WSL_data/node_").add(id.to_string().as_str()).add("_WSL"),
+            local_path: String::from("WAL_data/node_").add(id.to_string().as_str()).add("_WAL"),
         }
     }
 
@@ -720,7 +720,7 @@ pub struct ConsensusModule {
     leader_id: i32,                          // leader id
     current_term: i32,                       // 当前任期
     voted_for: Option<i32>,                  // 在当前任期投票给谁
-    log: WSL,                                // 日志
+    log: WAL,                                // 日志
     apply_log_vote_received:i32,             // 当前发送的日志接受票数
     is_spv: bool,                            // 是否SPV节点
     state: CMState,                          // 当前状态
@@ -748,7 +748,7 @@ impl ConsensusModule {
             leader_id: 0,
             current_term: 0,
             voted_for: None,
-            log: WSL::new(id),
+            log: WAL::new(id),
             apply_log_vote_received: 0,
             is_spv: false,
             state: CMState::Follower,
@@ -996,8 +996,8 @@ impl ConsensusModule {
     }
 }
 
-// /// WSL日志系统
-// pub struct WSLSystem {
+// /// WAL日志系统
+// pub struct WALSystem {
 //     id: i32,                    // 节点id
 //
 // }
