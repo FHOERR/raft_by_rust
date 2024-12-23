@@ -163,7 +163,7 @@ async fn test_node0_revive() -> Result<()> {
     debug_println(String::from("节点0复活"));
     time::sleep(Duration::from_secs(1)).await;
 
-    if let Some((_, tmp_leader_id, tmp_current_term, tmp_state, _)) = cluster.get_cm_info_by_id(0) {
+    if let Some((_, tmp_leader_id, tmp_current_term, tmp_state, _, _, _)) = cluster.get_cm_info_by_id(0) {
         debug_println(String::from("节点0当前状态为\nleader_id=").add(tmp_leader_id.to_string().as_str())
             .add("\ntmp_current_term=").add(tmp_current_term.to_string().as_str())
             .add("\nstate=").add(tmp_state.to_string().as_str()));
@@ -217,7 +217,7 @@ async fn test_node1_revive() -> Result<()> {
 
     let mut tmp_debug_str = String::from("节点0 1死亡状态下其他节点稳定后情况:\n");
     for i in 0..5 {
-        if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers)) = cluster.get_cm_info_by_id(i) {
+        if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers, _, _)) = cluster.get_cm_info_by_id(i) {
             tmp_debug_str.push_str(&format!(
                 "node_{}\nleader_id={}\nterm={}\nstate={}\npeers={}\n\n",
                 tmp_id, tmp_leader_id, tmp_term, tmp_state, format!("{:?}", tmp_peers)
@@ -234,14 +234,14 @@ async fn test_node1_revive() -> Result<()> {
     }
 
     // 等待信息同步完成
-    time::sleep(Duration::from_secs(2)).await;
+    time::sleep(Duration::from_secs(3)).await;
 
     let mut tmp_debug_str = String::from("节点0 1复活后其他节点稳定后情况:\n");
     for i in 0..5 {
-        if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers)) = cluster.get_cm_info_by_id(i) {
+        if let Some((tmp_id, tmp_leader_id, tmp_term, tmp_state, tmp_peers, tmp_height, _)) = cluster.get_cm_info_by_id(i) {
             tmp_debug_str.push_str(&format!(
-                "node_{}\nleader_id={}\nterm={}\nstate={}\npeers={}\n\n",
-                tmp_id, tmp_leader_id, tmp_term, tmp_state, format!("{:?}", tmp_peers)
+                "node_{}\nleader_id={}\nterm={} height={}\nstate={}\npeers={}\n\n",
+                tmp_id, tmp_leader_id, tmp_term, tmp_height, tmp_state, format!("{:?}", tmp_peers)
             ));
         }
     }
@@ -249,4 +249,80 @@ async fn test_node1_revive() -> Result<()> {
 
     Ok(())
 
+}
+
+/// 测试block_height
+#[tokio::test]
+async fn test_block_height() -> Result<()> {
+    // 创建一个新的集群，并将节点0设置为领导者
+    let cluster = RaftCluster::new_with_leader(0, Vec::from([1, 2])).await?;
+    // 等待一段时间
+    time::sleep(Duration::from_secs(1)).await;
+
+    let mut tmp_debug_str = String::from("初始状态下一秒后情况:\n");
+    for i in 0..5 {
+        if let Some((tmp_id, _, tmp_term, tmp_state, _, tmp_height, _)) = cluster.get_cm_info_by_id(i) {
+            tmp_debug_str.push_str(&format!(
+                "node_{}:\nstate={} term={} height={}\n\n",
+                tmp_id, tmp_state, tmp_term, tmp_height
+            ));
+        }
+    }
+    debug_println(tmp_debug_str);
+
+    time::sleep(Duration::from_secs(1)).await;
+
+    tmp_debug_str = String::from("初始状态下两秒后情况:\n");
+    for i in 0..5 {
+        if let Some((tmp_id, _, tmp_term, tmp_state, _, tmp_height, _)) = cluster.get_cm_info_by_id(i) {
+            tmp_debug_str.push_str(&format!(
+                "node_{}:\nstate={} term={} height={}\n\n",
+                tmp_id, tmp_state, tmp_term, tmp_height
+            ));
+        }
+    }
+    debug_println(tmp_debug_str);
+
+    // 获取节点0 1的共识模块并设置cm.state = CMState::Dead
+    for i in 0..2 {
+        let cm = cluster.get_cm(i)?;
+        let mut cm = cm.lock().unwrap();
+        cm.state = CMState::Dead;
+    }
+
+    // 等待，让新的领导者选举完成, 信息同步完成
+    time::sleep(Duration::from_secs(1)).await;
+
+    tmp_debug_str = String::from("节点0 1节点死亡一秒后情况:\n");
+    for i in 0..5 {
+        if let Some((tmp_id, _, tmp_term, tmp_state, _, tmp_height, _)) = cluster.get_cm_info_by_id(i) {
+            tmp_debug_str.push_str(&format!(
+                "node_{}:\nstate={} term={} height={}\n\n",
+                tmp_id, tmp_state, tmp_term, tmp_height
+            ));
+        }
+    }
+    debug_println(tmp_debug_str);
+
+    // 获取节点0 1的共识模块并设置cm.state = CMState::Follower
+    for i in 0..2 {
+        let cm = cluster.get_cm(i)?;
+        let mut cm = cm.lock().unwrap();
+        cm.state = CMState::Follower;
+    }
+
+    time::sleep(Duration::from_secs(3)).await;
+
+    tmp_debug_str = String::from("节点0 1复活3秒后情况:\n");
+    for i in 0..5 {
+        if let Some((tmp_id, _, tmp_term, tmp_state, _, tmp_height, _)) = cluster.get_cm_info_by_id(i) {
+            tmp_debug_str.push_str(&format!(
+                "node_{}:\nstate={} term={} height={}\n\n",
+                tmp_id, tmp_state, tmp_term, tmp_height
+            ));
+        }
+    }
+    debug_println(tmp_debug_str);
+
+    Ok(())
 }

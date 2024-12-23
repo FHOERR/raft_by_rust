@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use std::collections::HashSet;
 use std::ops::Add;
 use tokio::{
     sync::mpsc,
@@ -199,6 +200,7 @@ pub struct AppendEntriesReply {
     pub success: bool,
     pub leader_id: i32,
     pub last_apply: i32,
+    pub peer_ids: Vec<i32>,
 }
 
 /// 消息RPC的参数
@@ -410,7 +412,7 @@ impl Server {
                     // if cm.election_reset_event.elapsed() >= cm.election_timeout_max {
                     //     debug_println(String::from("节点").add(cm.id.to_string().as_str()).add("发现leader心跳超时"));
                     // }
-                    if cm.state == CMState::Leader && cm.self_last_heart_beat.elapsed() > cm.heart_beat_timeout_max {
+                    if cm.state == CMState::Leader && cm.self_last_heart_beat.elapsed() > cm.election_timeout_max {
                         // 如果本来是leader但是掉线了, 则暂时不参与选举, 并将状态转换为follower
                         cm.state = CMState::Follower;
                         cm.election_reset_event = Instant::now();
@@ -488,8 +490,8 @@ impl Server {
             loop {
                 let mut leader_id = server_id.clone();
                 // 检查是否需要发送心跳
-                let (should_send_heartbeat, current_term, peer_ids, last_apply) = {
-                    let cm = heartbeat_cm.lock().unwrap();
+                let (should_send_heartbeat, current_term, mut peer_ids, last_apply) = {
+                    let mut cm = heartbeat_cm.lock().unwrap();
                     if cm.end_thread {
                         return
                     }
@@ -497,6 +499,7 @@ impl Server {
                         (false, 0, Vec::new(), 0)
                     } else {
                         leader_id = cm.leader_id.clone();
+                        cm.clear_peer_ids_set();
                         (true, cm.current_term.clone(), cm.peer_ids.clone(), cm.last_applied.clone())
                     }
                 };
@@ -506,7 +509,7 @@ impl Server {
                     for &peer_id in &peer_ids {
                         let args = AppendEntriesArgs {
                             term: current_term,
-                            leader_id: leader_id,
+                            leader_id,
                             prev_log_index: 0,
                             prev_log_term: 0,
                             entries: Vec::new(),
@@ -529,6 +532,9 @@ impl Server {
                                     } else if (reply.term > cm.current_term || reply.last_apply > cm.last_applied) && (cm.state == CMState::Leader || cm.state == CMState::Candidate) {
                                         cm.become_follower(reply.term, reply.leader_id);
                                     }
+                                    for (_, &v) in reply.peer_ids.iter().enumerate() {
+                                        cm.peer_ids_set.insert(v);
+                                    }
                                 }
                                 Err(e) => debug!("AppendEntries RPC失败: {}", e),
                             }
@@ -543,6 +549,18 @@ impl Server {
                         // }
                         if cm.id == cm.leader_id {
                             cm.reset_election_timer();
+                        }
+                        let mut all_peer_ids_set = HashSet::new();
+                        peer_ids = cm.peer_ids.clone();
+                        for &peer_id in &peer_ids {
+                            all_peer_ids_set.insert(peer_id);
+                        }
+                        let get_peer_ids_set = cm.peer_ids_set.clone();
+                        for (_, element) in get_peer_ids_set.iter().enumerate() {
+                            if !all_peer_ids_set.contains(element) {
+                                cm.peer_ids.push(*element);
+                                cm.heart_beat_events.push(Instant::now());
+                            }
                         }
                     }
                 }
@@ -698,6 +716,7 @@ impl Server {
 pub struct ConsensusModule {
     id: i32,                                 // 节点ID
     peer_ids: Vec<i32>,                      // 其他节点的ID列表
+    peer_ids_set: HashSet<i32>,              // 其他节点的ID列表
     leader_id: i32,                          // leader id
     current_term: i32,                       // 当前任期
     voted_for: Option<i32>,                  // 在当前任期投票给谁
@@ -725,6 +744,7 @@ impl ConsensusModule {
         let mut tmp_self = ConsensusModule {
             id,
             peer_ids,
+            peer_ids_set: HashSet::new(),
             leader_id: 0,
             current_term: 0,
             voted_for: None,
@@ -747,6 +767,10 @@ impl ConsensusModule {
         };
         tmp_self.init_peer_ids_heart();
         tmp_self
+    }
+
+    fn clear_peer_ids_set(&mut self) {
+        self.peer_ids_set.clear();
     }
 
     /// 返回选举超时时间
@@ -854,6 +878,7 @@ impl ConsensusModule {
                 success: false,
                 leader_id: args.leader_id,
                 last_apply: self.last_applied,
+                peer_ids: Vec::new(),
             };
         }
 
@@ -887,6 +912,7 @@ impl ConsensusModule {
                 success: false,
                 leader_id: self.leader_id,
                 last_apply: self.last_applied,
+                peer_ids: self.peer_ids.clone(),
             };
         }
 
@@ -906,6 +932,7 @@ impl ConsensusModule {
             success: true,
             leader_id: args.leader_id,
             last_apply: self.last_applied,
+            peer_ids: self.peer_ids.clone(),
         }
     }
 
@@ -1077,11 +1104,11 @@ impl RaftCluster {
 
     /// 通过id查询对应共识协议的信息,
     /// 包括id, leader_id, current_term, state, peer_ids
-    pub fn get_cm_info_by_id(&self, id: i32) -> Option<(i32, i32, i32, CMState, Vec<i32> )> {
+    pub fn get_cm_info_by_id(&self, id: i32) -> Option<(i32, i32, i32, CMState, Vec<i32>, i32, Vec<LogEntry> )> {
         for (_, tmp_cm) in self.cm_list.iter().enumerate() {
             let cm = tmp_cm.lock().unwrap();
             if cm.id == id {
-                return Some((cm.id, cm.leader_id, cm.current_term, cm.state, cm.peer_ids.clone()));
+                return Some((cm.id, cm.leader_id, cm.current_term, cm.state, cm.peer_ids.clone(), cm.last_applied, cm.log.logs.clone()));
             }
         }
         None
