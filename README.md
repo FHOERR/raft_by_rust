@@ -36,11 +36,11 @@ Raft算法包含了一些关键的安全性特性以确保一致性。
 
 ```rust
 pub struct LogEntry {
-    pub term: i32,			// 任期
-    pub height: i32,		// 区块高度
-    pub leader_id: i32,		// 领导者id
-    pub is_apply: bool,		// 用于区分是进行区块验证还是进行日志添加
-    pub info: String,		// 区块信息(交易打包结果等)
+   pub term: i32,			// 任期
+   pub height: i32,		// 区块高度
+   pub leader_id: i32,		// 领导者id
+   pub is_apply: bool,		// 用于区分是进行区块验证还是进行日志添加
+   pub info: String,		// 区块信息(交易打包结果等)
 }
 ```
 
@@ -50,9 +50,9 @@ pub struct LogEntry {
 
 ```rust
 pub struct WAL {
-    pub id: i32,				// 当前节点id
-    pub logs: Vec<LogEntry>,	// 存储日志
-    pub local_path: String,		// 本地文件存储地址
+   pub id: i32,				// 当前节点id
+   pub logs: Vec<LogEntry>,	// 存储日志
+   pub local_path: String,		// 本地文件存储地址
 }
 ```
 
@@ -62,10 +62,10 @@ WAL 是一种日志记录机制，广泛应用于数据库和分布式系统中�
 
 ```rust
 pub enum CMState {
-    Follower,   // 跟随者状态
-    Candidate,  // 候选人状态
-    Leader,     // 领导者状态
-    Dead,       // 已停止状态
+   Follower,   // 跟随者状态
+   Candidate,  // 候选人状态
+   Leader,     // 领导者状态
+   Dead,       // 已停止状态
 }
 ```
 
@@ -76,17 +76,17 @@ pub enum CMState {
 ```rust
 /// 请求投票RPC的参数
 pub struct RequestVoteArgs {
-    pub term: i32,				// 任期
-    pub candidate_id: i32,		// 候选人id
-    pub last_apply: i32,		// 上一区块高度
+   pub term: i32,				// 任期
+   pub candidate_id: i32,		// 候选人id
+   pub last_apply: i32,		// 上一区块高度
 }
 
 /// 请求投票RPC的响应
 pub struct RequestVoteReply {
-    pub term: i32,				// 任期
-    pub vote_granted: bool,		// 通过投票
-    pub leader_id: i32,			// 领导者id
-    pub last_apply: i32,		// 上一区块高度
+   pub term: i32,				// 任期
+   pub vote_granted: bool,		// 通过投票
+   pub leader_id: i32,			// 领导者id
+   pub last_apply: i32,		// 上一区块高度
 }
 ```
 
@@ -95,23 +95,23 @@ pub struct RequestVoteReply {
 ```rust
 /// 心跳RPC的参数
 pub struct AppendEntriesArgs {
-    pub term: i32,				// 任期
-    pub leader_id: i32,			// 领导者id
-    pub prev_log_index: i32,	// 上一log序号
-    pub prev_log_term: i32,		// 上一log任期
-    pub entries: Vec<LogEntry>,	// 日志实体
-    pub leader_commit: i32,		// 领导者
-    pub self_node_id: i32,		// id
-    pub last_apply: i32,		// 上一区块高度
+   pub term: i32,				// 任期
+   pub leader_id: i32,			// 领导者id
+   pub prev_log_index: i32,	// 上一log序号
+   pub prev_log_term: i32,		// 上一log任期
+   pub entries: Vec<LogEntry>,	// 日志实体
+   pub leader_commit: i32,		// 领导者
+   pub self_node_id: i32,		// id
+   pub last_apply: i32,		// 上一区块高度
 }
 
 /// 心跳RPC的响应
 pub struct AppendEntriesReply {
-    pub term: i32,				// 任期
-    pub success: bool,			// 通过
-    pub leader_id: i32,			// 领导者id
-    pub last_apply: i32,		// 上一区块高度
-    pub peer_ids: Vec<i32>,		// 其余节点id
+   pub term: i32,				// 任期
+   pub success: bool,			// 通过
+   pub leader_id: i32,			// 领导者id
+   pub last_apply: i32,		// 上一区块高度
+   pub peer_ids: Vec<i32>,		// 其余节点id
 }
 ```
 
@@ -120,13 +120,13 @@ pub struct AppendEntriesReply {
 ```rust
 /// Server包装了ConsensusModule并管理RPC通信
 pub struct Server {
-    server_id: i32,
-    peer_ids: Vec<i32>,
-    cm: Arc<Mutex<ConsensusModule>>,
-    rpc_proxy: Option<Arc<RPCProxy>>,
-    // ready: mpsc::Receiver<()>,
-    shutdown: bool,
-    want_be_leader: bool, // 设置了一个是否想变为leader的选项, 用于控制领导者选举, 不至于全是领导者导致超时(其实也可以搞随机选举超时, 但比较麻烦)
+   server_id: i32,
+   peer_ids: Vec<i32>,
+   cm: Arc<Mutex<ConsensusModule>>,
+   rpc_proxy: Option<Arc<RPCProxy>>,
+   // ready: mpsc::Receiver<()>,
+   shutdown: bool,
+   want_be_leader: bool, // 设置了一个是否想变为leader的选项, 用于控制领导者选举, 不至于全是领导者导致超时
 }
 ```
 
@@ -268,7 +268,7 @@ async fn test_leader_stop_election() -> Result<()>
    - 检查当前领导者是否为节点0。
    - 打印确认信息。
 3. **模拟节点0故障**:
-   - 将节点0的状态设置为死亡（Dead），并停止其线程。
+   - 将节点0的状态设置为死亡（Dead）。
 4. **等待新领导者选举**:
    - 等待一段时间，以便其他节点可以检测到节点0的故障并进行新的领导者选举。
 5. **验证新领导者**:
@@ -321,7 +321,7 @@ async fn test_leader_stop_election_2() -> Result<()>
    - 检查当前领导者是否为节点0。
    - 打印确认信息。
 3. **模拟节点0故障**:
-   - 将节点0的状态设置为死亡（Dead），并停止其线程。
+   - 将节点0的状态设置为死亡（Dead）。
    - 打印确认信息。
 4. **等待新领导者选举**:
    - 等待一段时间，以便其他节点可以检测到节点0的故障并进行新的领导者选举。
@@ -331,7 +331,7 @@ async fn test_leader_stop_election_2() -> Result<()>
    - 打印新领导者的ID和任期。
    - 如果成功选出新领导者，测试通过；否则，测试失败。
 6. **模拟第一个新领导者故障**:
-   - 将第一个新领导者的状态设置为死亡（Dead），并停止其线程。
+   - 将第一个新领导者的状态设置为死亡（Dead）。
 7. **等待第二次新领导者选举**:
    - 再次等待1秒钟，以便其他节点可以检测到第一个新领导者的故障并进行新一轮的领导者选举。
 8. **验证第二个新领导者**:
